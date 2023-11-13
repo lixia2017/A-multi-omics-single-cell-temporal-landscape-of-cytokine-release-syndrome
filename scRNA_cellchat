@@ -1,0 +1,277 @@
+# 加载包
+library(Seurat)
+library(CellChat)
+library(patchwork)
+library(ggplot2)
+library(dplyr)
+
+#前期数据处理
+load("/mnt/dgfs/3_After_Sales_Reanalysis/SingleCell_mRNA_RNASeq_lims/LiXia_20230524_mRNA_113_TYN_ZXX/Output/seurat_result/cluster_result/Plot.rData")
+
+# pbmc_filt@meta.data<-pbmc_filt@meta.data[,-ncol(pbmc_filt@meta.data)]
+#添加分组信息
+cell_group <- read.table(file="sample_changename.txt", header=T, sep="\t", check.name=F)
+colnames(cell_group)<-c("orig.ident","newident")
+cell_group$orig.ident<-factor(cell_group$orig.ident)
+table<-left_join(pbmc_filt@meta.data,cell_group)
+pbmc_filt[['newident']]<-table$newident
+
+#添加分组信息
+cell_group <- read.table(file="sample_group_CRT_nCART.txt", header=T, sep="\t", check.name=F)
+colnames(cell_group)<-c("newident","group2")
+cell_group$newident<-factor(cell_group$newident)
+table<-left_join(pbmc_filt@meta.data,cell_group)
+pbmc_filt[['group2']]<-table$group2
+
+#添加注释信息
+cell_annot <- read.table(file="cluster_annot.txt", header=T, sep="\t")
+colnames(cell_annot)<-c("seurat_clusters","anno")
+cell_annot$seurat_clusters<-factor(cell_annot$seurat_clusters)
+table<-left_join(pbmc_filt@meta.data,cell_annot)
+pbmc_filt[['anno']]<-table$anno
+
+#添加分组信息
+cell_group <- read.table(file="sample_group_CRS.txt", header=T, sep="\t", check.name=F)
+colnames(cell_group)<-c("newident","group3")
+cell_group$newident<-factor(cell_group$newident)
+table<-left_join(pbmc_filt@meta.data,cell_group)
+pbmc_filt[['group3']]<-table$group3
+ 
+pbmc_filt_save<- pbmc_filt
+#[1]  44282 629016
+#数据取并集的，集合1的独有的部分
+cells<- read.table("addmodulescore/version3/CART_outlier.txt",header=T)
+cell_downsample<- setdiff(colnames(pbmc_filt),cells[,1])
+write.table(cell_downsample,"setdiff_cells_orig.txt",quote=F,row.names=F)
+
+
+pbmc_filt<- subset(pbmc_filt,cell=cell_downsample)
+#数据剪切，去除红细胞和B细胞
+pbmc_filt@meta.data$orig.ident <- c()
+pbmc_filt<- pbmc_filt[,pbmc_filt@meta.data$anno %in% c("CD16_mono","CD14_mono","CD8_T","CD4_T","Cycling_T","NKT","Tumor")]
+dim(pbmc_filt)
+head(pbmc_filt)
+pbmc_filt_save1<- pbmc_filt
+#> dim(pbmc_filt)
+# [1]  44282 606878
+
+
+#进行等比例的抽取细胞
+pbmc_filt<- pbmc_filt_save1
+Idents(pbmc_filt)<- "seurat_clusters"
+allCells=names(Idents(pbmc_filt))
+allType = levels(Idents(pbmc_filt))
+
+choose_Cells = unlist(lapply(allType, function(x){
+  cgCells = allCells[Idents(pbmc_filt)== x ]
+  num = round(length(cgCells)*0.32)
+  cg=sample(cgCells,num)
+  cg
+}))
+df<- as.data.frame(choose_Cells)
+# > length(rownames(df))
+# [1] 194202
+cell_final<- as.data.frame(cells[,1])
+colnames(cell_final)[1]<- "choose_Cells"
+df_final<- rbind(df,cell_final)
+# [1] 198214
+write.table(df_final,"choose_Cell_200k.txt",sep="\t",quote=F)
+
+
+pbmc_filt<- pbmc_filt_save
+cell_sub<- df_final[,1]
+pbmc_filt_sub<-subset(pbmc_filt,cells=cell_sub)
+
+pbmc_filt<-pbmc_filt_sub
+save(pbmc_filt,file="Filter_plot_choose_200k.rData")
+pbmc_filt_200k<-pbmc_filt
+
+# 导出meta.data
+pbmc_filt<-pbmc_filt_200k
+df<- pbmc_filt@meta.data
+write.table(df,"meta_data.txt",sep="\t",quote=F)
+
+
+
+# 下游cellchat分析
+load("/mnt/dgfs/3_After_Sales_Reanalysis/SingleCell_mRNA_RNASeq_lims/LiXia_LC-X20230305003_2306_homosapiens/cellchat/Filter_plot_choose_200k.rData")
+pbmc_filt$anno<- c()
+
+#数据取并集的，集合1的独有的部分
+cells<- read.table("CART_outlier.txt",header=T)
+colnames(cells)[1]<- "cells"
+
+cells_meta<- read.table("meta_data.txt",header=T)
+cells_meta<- cbind(rownames(cells_meta),cells_meta)
+colnames(cells_meta)[1]<- "cells"
+
+df<- left_join(cells_meta,cells)
+write.table(df,"select_cells_meta.txt",sep="\t",quote=F)
+#基于细胞类型添加注释
+#添加细胞注释
+cell_annot <- read.table("select_cells.txt", header=T, sep="\t", check.names=F)
+colnames(cell_annot)<-c("cell","anno")
+table<- cbind(rownames(pbmc_filt@meta.data),pbmc_filt@meta.data)
+colnames(table)[1]<- "cell"
+table<-left_join(table,cell_annot)
+pbmc_filt[['anno']]<-table$anno
+head(pbmc_filt)
+
+
+# cellchat分析
+#load human dataset
+CellChatDB <- CellChatDB.human 
+#check info of the dataset
+CellChatDB$interaction[1:4,1:4]
+
+#deal with data
+cellchat <- createCellChat(object = pbmc_filt@assays$RNA@data,meta=pbmc_filt@meta.data,group.by='anno')
+cellchat <- setIdent(cellchat, ident.use = "anno",levels=unique(pbmc_filt@meta.data$anno))
+levels(cellchat@idents)
+groupSize <- as.numeric(table(cellchat@idents)) 
+
+p<-showDatabaseCategory(CellChatDB)
+ggsave("./tot/cellchat_result/CellChatDB.hsa.png",width=10,height=5,dpi=300)
+ggsave("./tot/cellchat_result/CellChatDB.hsa.pdf",width=10,height=5)
+
+
+# print(colnames(CellChatDB$interaction))
+CellChatDB.use<- CellChatDB
+#CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling") # use Secreted Signaling
+cellchat@DB <- CellChatDB.use
+cellchat <- subsetData(cellchat)
+# This step is necessary even if using the whole database
+# future::plan("multiprocess", workers = 4) # do parallel
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+
+cellchat <- projectData(cellchat, PPI.human)
+
+###Part II: Inference of cell-cell communication network
+cellchat <- computeCommunProb(cellchat)
+# Filter out the cell-cell communication if there are only few number of cells in certain cell groups
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+###信息提取
+df.net <- subsetCommunication(cellchat)
+write.table(df.net,"./tot/cellchat_result/Communication_info.txt",sep="\t",quote=F,row.names=F)
+
+##Infer the cell-cell communication
+cellchat <- computeCommunProbPathway(cellchat)
+cellchat <- aggregateNet(cellchat)
+
+groupSize <- as.numeric(table(cellchat@idents))
+head(cellchat@net$count)
+head(cellchat@net$weight)
+
+pdf(file="./tot/cellchat_result/network_interactions_count.pdf",height=8,width=8)
+netVisual_circle(cellchat@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= T, title.name = "Number of interactions")
+dev.off()
+
+pdf(file="./tot/cellchat_result/network_interactions_weight.pdf",height=8,width=8)
+netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= T, title.name = "Interaction weights/strength")
+dev.off()
+
+mat <- cellchat@net$weight
+cells_num<-length(levels(cellchat@idents))
+if(cells_num<=3){
+	nrow=1
+	ncol=cells_num
+	width=10
+	height=5
+}else if(cells_num>3 && cells_num<=4){
+	nrow=2
+	ncol=2
+	width=8
+	height=6
+}else if(cells_num>4 && cells_num<=6){
+	nrow=2
+	ncol=3
+	width=12
+	height=6
+}else if(cells_num>6 && cells_num<=9){
+	nrow=3
+	ncol=3
+	width=12
+	height=8
+}else if(cells_num>9 && cells_num<=10){
+	nrow=2
+	ncol=5
+	width=22
+	height=6
+}else if(cells_num>10 && cells_num<=12){
+	nrow=3
+	ncol=4
+	width=16
+	height=10
+}else if(cells_num>12 && cells_num<=15){
+	nrow=3
+	ncol=5
+	width=22
+	height=10
+}else if(cells_num>15 && cells_num<=16){
+	nrow=4
+	ncol=4
+	width=16
+	height=12
+}else if(cells_num>16 && cells_num<=20){
+	nrow=4
+	ncol=5
+	width=22
+	height=12
+}else{
+	nrow=5
+	ncol=6
+	width=26
+	height=15
+}
+pdf("./tot/cellchat_result/network_interactions_cells.pdf",width=width,height=height)
+par(mfrow = c(nrow,ncol), xpd=TRUE)
+for (i in 1:nrow(mat)) {
+  mat2 <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat2[i, ] <- mat[i, ]
+  netVisual_circle(mat2, vertex.weight = groupSize, weight.scale = T, edge.weight.max = max(mat), title.name = rownames(mat)[i])
+}
+dev.off()
+
+####Part III: Visualization of cell-cell communication network
+###可视化
+print(cellchat@netP$pathways)
+for (i in 1:length(cellchat@netP$pathways)){
+	pathways.show <- cellchat@netP$pathways[i]
+	# file=paste0("cellchat_result/pathway/",cellchat@netP$pathways[i],".pdf",sep="")
+	# vertex.receiver = seq(1,4)
+	# pdf(file=file,width=18,height=8)
+	# netVisual_aggregate(cellchat, signaling = pathways.show,  vertex.receiver = vertex.receiver)
+	# dev.off()
+	file2=paste0("./tot/cellchat_result/pathway/",cellchat@netP$pathways[i],".circle.pdf",sep="")
+	pdf(file=file2,width=10,height=10)
+	netVisual_aggregate(cellchat, signaling = pathways.show, layout = "circle")
+	dev.off()
+	file3=paste0("./tot/cellchat_result/pathway/",cellchat@netP$pathways[i],".chord.pdf",sep="")
+	pdf(file=file3,width=10,height=10)
+	netVisual_aggregate(cellchat, signaling = pathways.show, layout = "chord")
+	dev.off()
+}
+
+Pathways<- cellchat@netP$pathways
+plot<-lapply(Pathways,function(i){
+  netVisual_heatmap(cellchat, signaling = i, color.heatmap="Reds")
+})
+pdf("./tot/cellchat_result/pathway/all_pathway_heatmap.pdf")
+plot
+dev.off()
+
+save(cellchat,file="./tot/cellchat_result/cellchat.rData")
+
+
+# 进行绘图的调整
+load("tot/cellchat_result/cellchat.rData")
+# 计算和可视化网络中心性评分
+# Compute the network centrality scores
+cellchat_final <- netAnalysis_computeCentrality(cellchat, slot.name = "netP",thresh = 0.05) # the slot 'netP' means the inferred intercellular communication network of signaling pathways
+
+pathways.show <- cellchat_final@netP$pathways
+pdf("./tot/pathways.show_network.pdf")
+netAnalysis_signalingRole_network(cellchat_final, signaling = pathways.show, width = 8, height = 2.5, font.size = 10)
+dev.off()
+
