@@ -1,0 +1,56 @@
+
+# seurat4处理的rdata得到的loom文件
+library(Seurat)
+library(loomR)
+library(hdf5r)
+library(SeuratDisk)
+library(dplyr)
+
+# 加载T细胞再分群数据
+load("T_sub/Output/sub_seurat_result/cluster_result/Plot.rData")
+
+#添加注释信息
+cell_annot <- read.table(file="cluster_annot_20230828.txt", header=T, sep="\t")
+colnames(cell_annot)<-c("seurat_clusters","anno")
+cell_annot$seurat_clusters<-factor(cell_annot$seurat_clusters)
+table<-left_join(pbmc_filt@meta.data,cell_annot)
+pbmc_filt[['anno']]<-table$anno
+
+
+#T细胞数据处理 去除  "cd8_noncart","cd4_noncart" 里面的
+pbmc_filt<- pbmc_filt[,pbmc_filt@meta.data$anno %in% c("CD8_Teff","CD8_Tcm","CD8_Tem","CD8_Tex","CD8_CyclingT","CD4_Tcm","CD4_Tem")]
+
+
+#添加细胞注释
+cell_annot <- read.table("cell_anno.txt", header=T, sep="\t", check.names=F)
+colnames(cell_annot)<-c("cell","group7")
+table<- cbind(rownames(pbmc_filt@meta.data),pbmc_filt@meta.data)
+colnames(table)[1]<- "cell"
+table<-left_join(table,cell_annot)
+pbmc_filt[['group7']]<-table$group7
+head(pbmc_filt)
+
+
+pbmc_filt_save<- pbmc_filt
+Group<- unique(pbmc_filt@meta.data$group7)
+lapply(Group,function(x){
+pbmc_filt <- pbmc_filt_save
+pbmc_filt<- pbmc_filt[,pbmc_filt@meta.data$group7 %in% x]
+##生成umap.txt文件
+#获得“样品:细胞x”命名方式的细胞名
+cell_name <-paste(pbmc_filt$orig.ident,gsub('-[0-9]+','x',colnames(pbmc_filt)),sep = ":")
+UMAP <- pbmc_filt@reductions$umap@cell.embeddings
+rownames(UMAP)<-cell_name
+write.table(UMAP,paste0(x,"/umap_orig.txt"),row.names=T,col.names=F,quote=F,sep="\t")
+
+df <- pbmc_filt@meta.data
+write.table(df,paste0(x,"/meta.data.txt"),row.names=T,quote=F,sep="\t")
+
+##生成loom文件
+cell_name <-paste(pbmc_filt$orig.ident,gsub('-[0-9]+','x',colnames(pbmc_filt@assays$RNA@data)),sep = ":")
+pbmc_filt<-RenameCells(pbmc_filt,new.names=cell_name)
+pbmc.loom <- as.loom(pbmc_filt, filename = paste0(x,"/pbmc_filt.loom"), verbose = FALSE)
+pbmc.loom$close_all()
+})
+
+print("end")
