@@ -1,0 +1,81 @@
+library(Seurat)
+library(dplyr)
+library(graphics)
+library(dplyr)
+library(ggplot2)
+
+#加载T亚群的降维聚类数据
+load("T_sub/Output/sub_seurat_result/cluster_result/Plot.rData")
+
+
+#添加注释信息
+cell_annot <- read.table(file="cluster_annot.txt", header=T, sep="\t")
+colnames(cell_annot)<-c("seurat_clusters","anno")
+cell_annot$seurat_clusters<-factor(cell_annot$seurat_clusters)
+table<-left_join(pbmc_filt@meta.data,cell_annot)
+pbmc_filt[['anno']]<-table$anno
+
+
+#T细胞数据处理
+pbmc_filt<- pbmc_filt[,pbmc_filt@meta.data$anno %in% c("CD8_Teff","CD8_Tcm","CD8_Tem","CD8_Tex","CD8_CyclingT_1","CD8_CyclingT_2","CD4_Tcm","CD4_Tem","CD4_CyclingT","NKT")]
+
+head(pbmc_filt)
+unique(pbmc_filt@meta.data$anno)
+
+#添加分组信息
+cell_group <- read.table(file="sample_changename.txt", header=T, sep="\t", check.name=F)
+colnames(cell_group)<-c("orig.ident","newident")
+cell_group$orig.ident<-factor(cell_group$orig.ident)
+table<-left_join(pbmc_filt@meta.data,cell_group)
+pbmc_filt[['newident']]<-table$newident
+
+#添加分组信息
+cell_group <- read.table(file="sample_group_s1_s7.txt", header=T, sep="\t", check.name=F)
+colnames(cell_group)<-c("newident","group3")
+cell_group$newident<-factor(cell_group$newident)
+table<-left_join(pbmc_filt@meta.data,cell_group)
+pbmc_filt[['group3']]<-table$group3
+
+#给数据进行排序
+pbmc_filt@meta.data$anno<-factor(pbmc_filt@meta.data$anno,levels = c("CD4_CyclingT","CD4_Tcm","CD4_Tem","CD8_CyclingT_1","CD8_CyclingT_2","CD8Tcm","CD8_Teff","CD8_Tex","CD8_Tem","NKT"))
+pbmc_filt@meta.data$group3<-factor(pbmc_filt@meta.data$group3,levels = c("S1","S2","S3","S4","S5","S6","S7"))
+
+# TCR分析的数据处理（TCR分析得到的数据 "/Output/clonotype/clonotype_cell_frequency.txt"）
+frequency <- read.table("clonotype_cell_frequency.txt",header=T)
+Data<- pbmc_filt@meta.data
+Data<- cbind(rownames(Data),Data)
+colnames(Data)[1]<- "Cell"
+
+# 合并TCR分析的数据和单细胞的meta.data数据
+final_frequency <- left_join(frequency,Data)
+final_frequency<- final_frequency[,c("Cell","group3","raw_clonotype_id","Freq")]
+write.table(final_frequency,"final_frequency.txt",sep="\t",quote=F,row.names=F)
+
+# 联合分析数据的分类以及可视化
+data<- final_frequency
+data <- data[,c(1,4)]
+pbmc_filt@meta.data$Cell <- rownames(pbmc_filt@meta.data)
+pbmc_filt@meta.data <- left_join(pbmc_filt@meta.data,data)
+rownames(pbmc_filt@meta.data) <- pbmc_filt@meta.data$Cell
+head(pbmc_filt)
+
+# 进行freq的判断（克隆丰度的判断）
+pbmc_filt$Freq1<- "NA"
+pbmc_filt@meta.data[which(pbmc_filt@meta.data$Freq >= 10),"Freq1"] <- "Clone>=10"
+pbmc_filt@meta.data[which(pbmc_filt@meta.data$Freq >= 2 & pbmc_filt@meta.data$Freq <10),"Freq1"] <- "Clone>=2"
+pbmc_filt@meta.data[which(pbmc_filt@meta.data$Freq == 1),"Freq1"] <- "Clone=1"
+
+# 加载颜色色块
+cols_brewer = c("#037ef3","#f85a40","#00c16e","#17BECFFF","#AEC7E8FF","#FFBB78FF","#98DF8AFF","#FF9896FF","#C5B0D5FF","#C49C94FF","#F7B6D2FF","#C7C7C7FF","#DBDB8DFF","#9EDAE5FF","#A80D15","#8D0EF1","#1317FD","#197731","#FAF300","#F90DDB","#FD7001","#00A3E9")
+
+# 绘制总的降维聚类图
+p1 <- DimPlot(pbmc_filt,group.by="Freq1",reduction="umap",cols=cols_brewer)
+p2 <- DimPlot(pbmc_filt,reduction="umap",group.by="group3",label=T,repel=T)
+p <- p1+p2
+ggsave(p,file="clonotype_umap.pdf",height=5,width=12)
+
+# 绘制split降维图
+p <- DimPlot(pbmc_filt,group.by="Freq1",split.by="group3",ncol=4,reduction="umap",cols=c("#3C5488FF","#DC0000FF","#B09C85FF","#DBDB8DFF"))
+ggsave(p,file="clonotype_umap_group3_split_type_0802.pdf",width=24,height=12)
+
+
