@@ -1,0 +1,108 @@
+library(ggpubr)
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+library(stringr)
+library(ggalluvial)
+library(ggsci)
+library(ArchR)
+
+# 首先提取TCR分析中的部分列
+# cut -f 1,2,24,30 /TCRanalysis2/Output/all_filtered_contig_annotations.txt >clonetype.txt
+# 加载数据
+clonetype <- read.table(file="clonetype.txt", header=T, sep="\t", quote="")
+colnames(clonetype)[1]<- "orig.ident"
+
+#添加分组信息
+cell_group <- read.table(file=" sample_changename.txt", header=T, sep="\t", check.name=F)
+colnames(cell_group)<-c("orig.ident","newident")
+cell_group$orig.ident<-factor(cell_group$orig.ident)
+table<-left_join(clonetype,cell_group)
+clonetype$newident<-table$newident
+
+cell_group <- read.table(file=" sample_group_CRS.txt", header=T, sep="\t", check.name=F)
+colnames(cell_group)<-c("newident","group1")
+cell_group$newident<-factor(cell_group$newident)
+table<-left_join(clonetype,cell_group)
+clonetype$group1 <-table$group1
+
+cell_group <- read.table(file=" sample_group_CRT_nCART.txt", header=T, sep="\t", check.name=F)
+colnames(cell_group)<-c("newident","group2")
+cell_group$newident<-factor(cell_group$newident)
+table<-left_join(clonetype,cell_group)
+clonetype$group2 <-table$group2
+
+cell_group <- read.table(file=" sample_group_s1_s7.txt", header=T, sep="\t", check.name=F)
+colnames(cell_group)<-c("newident","group3")
+cell_group$newident<-factor(cell_group$newident)
+table<-left_join(clonetype,cell_group)
+clonetype$group3 <-table$group3
+
+cell_group <- read.table(file=" sample_group_pt.txt", header=T, sep="\t", check.name=F)
+colnames(cell_group)<-c("newident","group4")
+cell_group$newident<-factor(cell_group$newident)
+table<-left_join(clonetype,cell_group)
+clonetype$Patients <-table$group4
+
+
+
+clonetype_save<- clonetype
+# 因为有不同的分类，所以需要分开进行绘图
+setwd(" CLONEanalysis/analysis_fianl/state_mapping/S1_S7")
+clonetype <- clonetype_save
+clonetype<- clonetype[clonetype$group3 %in% c("S1","S7"),]
+
+
+setwd(" CLONEanalysis/analysis_fianl/state_mapping/S5_S7")
+clonetype <- clonetype_save
+clonetype<- clonetype[clonetype$group3 %in% c("S5","S7"),]
+
+setwd(" CLONEanalysis/analysis_fianl/state_mapping/S1_S4")
+clonetype <- clonetype_save
+clonetype<- clonetype[clonetype$group3 %in% c("S1","S4"),]
+
+setwd(" CLONEanalysis/analysis_fianl/state_mapping/S1_S3")
+clonetype <- clonetype_save
+clonetype<- clonetype[clonetype$group3 %in% c("S1","S3"),]
+
+#20230724
+setwd(" CLONEanalysis/analysis_fianl/state_mapping/S1_S5")
+clonetype <- clonetype_save
+clonetype<- clonetype[clonetype$group3 %in% c("S1","S5"),]
+
+setwd(" CLONEanalysis/analysis_fianl/state_mapping/S2_S4")
+clonetype <- clonetype_save
+clonetype<- clonetype[clonetype$group3 %in% c("S2","S4"),]
+
+setwd(" CLONEanalysis/analysis_fianl/state_mapping/S1_S6")
+clonetype <- clonetype_save
+clonetype<- clonetype[clonetype$group3 %in% c("S1","S6"),]
+
+lapply(unique(clonetype$Patients), function(x){
+  clonetype_sub<-subset(clonetype,Patients==x)
+  clonetypestat<-table(clonetype_sub$cdr3,clonetype_sub$group3)
+  clonetypestat_percent<-prop.table(clonetypestat)
+  clonetypestat_percent<- as.data.frame(clonetypestat_percent)
+  clonetypestat_percent %>% group_by(Var2) %>% top_n(20, Freq) -> top5
+  colnames(top5)<-c("Cdr3","Phase","Freq")
+  
+  pal <- paletteDiscrete(set = "stallion", values = unique(top5$Cdr3))
+  
+  p<-ggbarplot(
+    top5,
+    'Phase',
+    "Freq",
+    fill = 'Cdr3',
+    add = 'mean_se',
+    width = 0.6,
+    position = position_stack(),
+    error.plot = 'errorbar',
+    label = FALSE,
+  )+
+    geom_alluvium(aes_string(x='Phase',y="Freq",fill="Cdr3",stratum="Cdr3",alluvium="Cdr3"),width=0.6,alpha=0.6)+
+    scale_fill_manual(values = pal)+
+    theme(legend.position = 'right')+
+    guides(fill=guide_legend(ncol = 1))
+  
+  ggsave(p,file=paste0(x,'_cdr3_barplot.pdf'),width = 8,height = 10)
+})
