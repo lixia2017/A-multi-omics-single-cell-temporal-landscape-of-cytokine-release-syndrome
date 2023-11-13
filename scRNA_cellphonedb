@@ -1,0 +1,117 @@
+library(Seurat)
+library(CellChat)
+library(patchwork)
+library(ggplot2)
+library(dplyr)
+
+# 数据处理
+load("Plot.rData")
+
+#添加分组信息
+cell_group <- read.table(file="sample_changename.txt", header=T, sep="\t", check.name=F)
+colnames(cell_group)<-c("orig.ident","newident")
+cell_group$orig.ident<-factor(cell_group$orig.ident)
+table<-left_join(pbmc_filt@meta.data,cell_group)
+pbmc_filt[['newident']]<-table$newident
+
+#添加分组信息
+cell_group <- read.table(file="sample_group_CRT_nCART.txt", header=T, sep="\t", check.name=F)
+colnames(cell_group)<-c("newident","group2")
+cell_group$newident<-factor(cell_group$newident)
+table<-left_join(pbmc_filt@meta.data,cell_group)
+pbmc_filt[['group2']]<-table$group2
+
+#添加注释信息
+cell_annot <- read.table(file="cluster_annot.txt", header=T, sep="\t")
+colnames(cell_annot)<-c("seurat_clusters","anno")
+cell_annot$seurat_clusters<-factor(cell_annot$seurat_clusters)
+table<-left_join(pbmc_filt@meta.data,cell_annot)
+pbmc_filt[['anno']]<-table$anno
+
+#添加分组信息
+cell_group <- read.table(file="sample_group_CRS.txt", header=T, sep="\t", check.name=F)
+colnames(cell_group)<-c("newident","group3")
+cell_group$newident<-factor(cell_group$newident)
+table<-left_join(pbmc_filt@meta.data,cell_group)
+pbmc_filt[['group3']]<-table$group3
+ 
+pbmc_filt_save<- pbmc_filt
+#[1]  44282 629016
+#数据取并集的，集合1的独有的部分
+cells<- read.table("addmodulescore/version3/CART_outlier.txt",header=T)
+cell_downsample<- setdiff(colnames(pbmc_filt),cells[,1])
+write.table(cell_downsample,"setdiff_cells_orig.txt",quote=F,row.names=F)
+
+
+pbmc_filt<- subset(pbmc_filt,cell=cell_downsample)
+#数据剪切，去除红细胞和B细胞
+pbmc_filt@meta.data$orig.ident <- c()
+pbmc_filt<- pbmc_filt[,pbmc_filt@meta.data$anno %in% c("CD16_mono","CD14_mono","CD8_T","CD4_T","Cycling_T","NKT","Tumor")]
+dim(pbmc_filt)
+head(pbmc_filt)
+pbmc_filt_save1<- pbmc_filt
+#> dim(pbmc_filt)
+# [1]  44282 606878
+
+#cellphonedb切细胞
+pbmc_filt<- pbmc_filt_save1
+Idents(pbmc_filt)<- "seurat_clusters"
+allCells=names(Idents(pbmc_filt))
+allType = levels(Idents(pbmc_filt))
+
+choose_Cells = unlist(lapply(allType, function(x){
+  cgCells = allCells[Idents(pbmc_filt)== x ]
+  num = round(length(cgCells)*0.06)
+  cg=sample(cgCells,num)
+  cg
+}))
+df<- as.data.frame(choose_Cells)
+cell_final<- as.data.frame(cells[,1])
+colnames(cell_final)[1]<-"choose_Cells"
+df_final<- rbind(df,cell_final)
+write.table(df_final,"choose_Cell_40k.txt",sep="\t",quote=F,row.names=F)
+#> length(rownames(df_final))
+#[1] 37631
+
+
+pbmc_filt<- pbmc_filt_save
+cell_sub<- df_final[,1]
+pbmc_filt_sub<-subset(pbmc_filt,cells=cell_sub)
+pbmc_filt<-pbmc_filt_sub
+save(pbmc_filt,file="Filter_plot_choose_40k.rData")
+
+# 导出meta.data
+df<- pbmc_filt@meta.data
+write.table(df,"meta_data.txt",sep="\t",quote=F)
+
+
+
+# 下游的数据拆分
+# 加载数据
+load("Filter_plot_choose_40k.rData")
+
+pbmc_filt@meta.data$anno<- c()
+#基于细胞类型添加注释
+#添加细胞注释
+cell_annot <- read.table("select_cells.txt", header=T, sep="\t", check.names=F)
+colnames(cell_annot)<-c("cell","anno")
+table<- cbind(rownames(pbmc_filt@meta.data),pbmc_filt@meta.data)
+colnames(table)[1]<- "cell"
+table<-left_join(table,cell_annot)
+pbmc_filt[['anno']]<-table$anno
+head(pbmc_filt)
+
+
+#循环要开始了
+Group<- c("CRSb","CRSp","CRSr")
+pbmc_filt_save<- pbmc_filt
+lapply(Group,function(x){
+pbmc_filt<- pbmc_filt_save
+pbmc_filt<- pbmc_filt[,pbmc_filt@meta.data$group3 %in% x]
+save(pbmc_filt,file=paste0("./",x,"/Filter_plot_choose.rData"))
+#extract count data and meta.data
+meta_data<- pbmc_filt@meta.data
+write.table(meta_data,paste0("./",x,"/meta_data.txt"),sep="\t",quote=F)
+})
+
+
