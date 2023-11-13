@@ -1,0 +1,75 @@
+# 加载R环境中需要的包
+library(Seurat)
+library(dplyr)
+library(Matrix)
+library(scales)
+library(ggplot2)
+library(future)
+library(harmony)
+# 读取合并分析的数据矩阵
+pbmc.counts <- Read10X(data.dir = "Output/Cellranger_aggr/aggr/outs/expression")
+dim(pbmc.counts)
+# 创建seurat对象
+pbmc <- CreateSeuratObject(counts = pbmc.counts,min.cells=1)
+sample_map<-read.table(file="sample_map.txt",sep="\t",header=F,row.names=1,quote="")
+sample_colors=hue_pal()(nrow(sample_map)) ###ggplot assigns colors
+Header<-colnames(pbmc)
+Sample_Index<-list()
+Index_Name<-list()
+project<-list()
+for(i in 1:nrow(sample_map)){
+	Sample_Index[[i]]<-as.character(sample_map[i,1])
+	pattern<-paste0("-",i,"$")
+	Index<-grep(pattern,Header,value=F)
+	project[[i]]<-c(rep(Sample_Index[[i]],length(Index))) 
+}
+project=unlist(project)
+#pbmc <-CreateSeuratObject(counts = pbmc.counts,project=project,min.cells=1)
+pbmc@meta.data[["orig.ident"]]=project
+dim(pbmc) 
+
+pbmc@meta.data$orig.ident<-factor(pbmc@meta.data$orig.ident,levels=sample_map[,1])
+
+# 红细胞基因占比计算
+hb_gene<-read.table(file="hsa_HB_genename.txt",header=F,sep="\t",quote="")
+rownames(hb_gene)<-as.vector(hb_gene[,1])
+hb_select_gene<-intersect(rownames(hb_gene),rownames(pbmc))
+pbmc[["percent.HB"]] <-PercentageFeatureSet(pbmc, features = hb_select_gene)
+
+sample_number=nrow(sample_map)
+# 红细胞基因占比计算
+mt_gene<-read.table(file="hsa_gene2chrMT2name_final.txt",header=F,sep="\t",quote="",row.names=3)
+mt_select_gene<-intersect(rownames(mt_gene),rownames(pbmc))
+pbmc[["percent.mito"]] <-PercentageFeatureSet(pbmc, features = mt_select_gene)
+
+# 进行细胞过滤（线粒体占比和最低基因的过滤）
+pbmc_filt <- subset(pbmc,subset = nFeature_RNA>500 & nFeature_RNA<Inf & nCount_RNA>-Inf & nCount_RNA<Inf & percent.mito<50)
+dim(pbmc_filt)
+
+singlet<-read.table(file="Output/DoubletFinder_result/all_sample_Singlet.txt",header=F,sep="\t",quote="",row.names=1,check.names=F)
+cells<-intersect(colnames(pbmc_filt),rownames(singlet))
+pbmc_filt<-subset(pbmc_filt,cells=cells)
+dim(pbmc_filt)
+
+# 进行数据的均一化处理
+pbmc_filt <- NormalizeData(pbmc_filt,normalization.method = "LogNormalize", scale.factor = 10000)
+# 高变基因的计算
+pbmc_filt <- FindVariableFeatures(object = pbmc_filt,selection.method = "vst",nfeatures = 2000)
+
+all.genes <- rownames(pbmc_filt)
+# 数据归一化处理
+pbmc_filt <- ScaleData(object = pbmc_filt,features =all.genes,vars.to.regress =NULL)
+# 主成分分析
+pbmc_filt <- RunPCA(object = pbmc_filt)
+# 基于样本进行去批次效应分析
+pbmc_filt <- RunHarmony(object = pbmc_filt,group.by.vars="orig.ident", plot_convergence = TRUE)
+# 保存过程数据（可以不进行这个选项）
+save(pbmc_filt, file = "/Output/seurat_result/cluster_result/Filter_Basicinfo1.rData")
+
+# 进行数据的聚类和降维分析
+pbmc_filt <- FindNeighbors(pbmc_filt, reduction = "harmony",dims = 1:20)
+pbmc_filt <- FindClusters(pbmc_filt, resolution = 0.8,algorithm = 1)
+pbmc_filt <- RunUMAP(pbmc_filt, reduction = "harmony",dims = 1:20,n.neighbors=30,min.dist=0.3)
+pbmc_filt <- RunTSNE(pbmc_filt, reduction = "harmony",dims = 1:20,perplexity = 30)
+# 保存最终的单细胞数据
+save(pbmc_filt, file = "/Output/seurat_result/cluster_result/Filter_Basicinfo.rData")
