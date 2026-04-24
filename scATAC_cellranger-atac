@@ -189,3 +189,170 @@ coembed <- RunHarmony(coembed, group.by.vars = "samples",theta=2,lambda=1, plot_
 coembed <- RunUMAP(coembed, dims = 1:30, reduction = "harmony")
 
   
+##10x Genomics Single Cell Multiome ATAC + Gene Expression
+library(Signac)
+library(Seurat)
+library(ggplot2)
+library(parallel)
+library(ArchR)
+library(rtracklayer)
+library(harmony)
+
+# Set input and output directories
+indir <- "aggr"
+outdir <- "."
+
+# Read peak/cell matrix
+counts <- Read10X_h5(filename = paste(indir, "/outs/filtered_peak_bc_matrix.h5", sep = ""))
+# Check the number of peaks and cells
+dim(counts)
+# Read cell metadata
+metadata <- read.csv(file = paste(indir, "/outs/singlecell.csv", sep = ""),
+                     header = TRUE,
+                     row.names = 1)
+
+# Set fragment file path
+fragment.path <- paste(indir, "/outs/fragments.tsv.gz", sep = "")
+
+# Load chromosome length information for GRCh38
+chrs <- read.table("refdata-cellranger-arc-GRCh38-2020-A-2.0.0/star/chrNameLength.txt", header = F, quote = "")
+
+GRCh38 <- Seqinfo(seqnames = chrs[,1],
+                seqlengths = chrs[,2],
+                genome = "GRCh38")
+
+# Create chromatin assay object
+chrom_assay <- CreateChromatinAssay(
+  counts = counts,
+  sep = c(":", "-"),
+  genome = GRCh38,
+  fragments = fragment.path,
+  min.cells = 10,
+  min.features = 200
+)
+
+# Create Seurat object
+pbmc <- CreateSeuratObject(
+  counts = chrom_assay,
+  assay = "peaks",
+  meta.data = metadata
+)
+
+# Read sample information and rename cell groups
+aggrfile <- "aggr.csv"
+sample <- read.csv(aggrfile, header = T, quote = "")
+
+for (i in 1:length(sample[,1])){
+  name <- as.character(sample[i,1])
+  pattern <- paste0("-", i, "$")
+  cell <- rownames(pbmc@meta.data[grep(pattern, rownames(pbmc@meta.data), value = F), ])
+  pbmc@meta.data[, "orig.ident"] <- as.character(pbmc@meta.data[, "orig.ident"])
+  pbmc@meta.data[cell, "orig.ident"] <- name
+}
+
+# Load gene annotation (GTF)
+gffRangedData <- import.gff("refdata-cellranger-arc-GRCh38-2020-A-2.0.0/genes/genes.gtf.gz")
+gffRangedData$gene_biotype <- gffRangedData$gene_type
+gene.ranges <- as(gffRangedData, "GRanges")
+genome(gene.ranges) <- "GRCh38"
+Annotation(pbmc) <- gene.ranges
+
+############ Quality Control ############
+
+# Calculate nucleosome banding pattern
+pbmc <- NucleosomeSignal(object = pbmc, region = gene.ranges)
+# Calculate TSS enrichment score
+pbmc <- TSSEnrichment(object = pbmc, fast = FALSE)
+# Calculate percentage of reads in peaks
+pbmc$pct_reads_in_peaks <- pbmc$peak_region_fragments / pbmc$passed_filters * 100
+# Calculate ratio of reads in blacklist regions
+pbmc$blacklist_ratio <- pbmc$blacklist_region_fragments / pbmc$peak_region_fragments
+
+# Visualize QC metrics
+p1 <- VlnPlot(pbmc, c('pct_reads_in_peaks', 'peak_region_fragments','TSS.enrichment'), group.by = "orig.ident", pt.size = 0.1)
+ggsave(paste(outdir, "/pct_reads_in_peaks.png", sep = ""), p1, width = 24)
+p2 <- VlnPlot(pbmc, c('blacklist_ratio'), group.by = "orig.ident", pt.size = 0.1) & scale_y_log10()
+ggsave(paste(outdir, "/blacklist_ratio.png", sep = ""), p2)
+p3 <- VlnPlot(pbmc, c('nucleosome_signal'), group.by = "orig.ident", pt.size = 0.1)
+ggsave(paste(outdir, "/nucleosome_signal.png", sep = ""), p3)
+
+# Group cells by nucleosome signal strength
+pbmc$nucleosome_group <- ifelse(pbmc$nucleosome_signal > 10, 'NS > 10', 'NS < 10')
+
+# Filter for protein-coding genes and standard chromosomes
+gene.ranges <- gene.ranges[gene.ranges$gene_type == 'protein_coding', ]
+gene.ranges <- keepStandardChromosomes(gene.ranges, pruning.mode = 'coarse')
+
+# Create TSS ranges
+tss.ranges <- GRanges(
+  seqnames = seqnames(gene.ranges),
+  ranges = IRanges(start = start(gene.ranges), width = 2),
+  strand = strand(gene.ranges)
+)
+
+seqlevelsStyle(tss.ranges) <- 'UCSC'
+tss.ranges <- keepStandardChromosomes(tss.ranges, pruning.mode = 'coarse')
+
+# Classify cells by TSS enrichment score
+pbmc$high.tss <- ifelse(pbmc$TSS.enrichment > 2, 'High', 'Low')
+# Visualize TSS enrichment score
+pdf(paste(outdir, "/TSS_enrichment_score.pdf", sep = ""))
+TSSPlot(pbmc, group.by  = 'orig.ident') + ggtitle("TSS enrichment score") 
+dev.off()
+
+###################################
+# Save raw Seurat object
+save(pbmc, file = paste(outdir, "/atac_raw.Rdata", sep = ""))
+
+# Normalization, feature selection, scaling, and PCA
+pbmc <- NormalizeData(pbmc, normalization.method = "RC", scale.factor = 1000000)
+pbmc <- FindVariableFeatures(object = pbmc, selection.method = "vst", nfeatures = 5000)
+pbmc <- ScaleData(object = pbmc) 
+pbmc <- RunPCA(pbmc)
+
+############## Batch Correction ###############
+# Integrate data using Harmony
+pbmc_harmony <- RunHarmony(
+  object = pbmc,
+  group.by.vars = 'orig.ident',
+  reduction = 'pca',
+  assay.use = 'peaks',
+  project.dim = FALSE
+)
+
+# Dimensionality reduction and clustering
+pbmc <- RunUMAP(object = pbmc_harmony, reduction = 'harmony', dims = 2:25)
+pbmc <- FindNeighbors(object = pbmc, reduction = 'harmony', dims = 2:25)
+
+###################################
+pbmc <- FindClusters(object = pbmc, verbose = FALSE, algorithm = 3)
+# Visualize UMAP clustering results
+pal1 <- paletteDiscrete(set = "stallion", values = unique(pbmc$orig.ident))
+pal2 <- paletteDiscrete(set = "stallion", values = unique(pbmc$seurat_clusters))
+pal3 <- paletteDiscrete(set = "stallion", values = unique(pbmc$Group))
+pal4 <- paletteDiscrete(set = "stallion", values = unique(pbmc$Phase))
+
+p1 <- DimPlot(object = pbmc, label = F, pt.size = 0.8, group.by = 'orig.ident', cols = pal1)
+p2 <- DimPlot(object = pbmc, label = T, pt.size = 0.8, cols = pal2)
+p3 <- DimPlot(object = pbmc, label = F, pt.size = 0.8, group.by = 'Group', cols = pal3)
+p4 <- DimPlot(object = pbmc, label = F, pt.size = 0.8, group.by = 'Phase', cols = pal4)
+
+do.call(cowplot::plot_grid, c(list(ncol = 2), list(p1, p2, p3, p4)))
+ggsave(paste0(outdir, '/Umap_Cluster_plot_pca.pdf'), width = 16, height = 16)
+
+# Calculate gene activity scores from ATAC-seq data
+gene.activities <- GeneActivity(pbmc)
+
+# Add gene activity as a new RNA assay and normalize
+pbmc[['RNA']] <- CreateAssayObject(counts = gene.activities)
+pbmc <- NormalizeData(
+  object = pbmc,
+  assay = 'RNA',
+  normalization.method = 'LogNormalize',
+  scale.factor = median(pbmc$nCount_RNA)
+)
+
+DefaultAssay(pbmc) <- 'RNA'
+
+# Save final processed object
+save(pbmc, file = paste(outdir, "/atac.Rdata", sep = ""))
